@@ -1,0 +1,854 @@
+<html><head><title>icm caluclator</title>
+<script>
+(function() {
+	var model;
+	
+	var calculateICM;
+	// ICM計算関係を隔離
+	(function() {
+		var prizePool;
+		var stacks;
+		
+		var getProbability = function(ranking) {
+			var allAmount = 0;
+			for(var i = 0; i < 10; i++) {
+				allAmount += stacks[i];
+			}
+			var ret = 1;
+			for(var i = 0; i < ranking.length; i++) {
+				if(allAmount <= 0) {
+					return 0;
+				}
+				var c = stacks[ranking[i]];
+				// 残存スタック量がそのまま勝率となる
+				ret *= c / allAmount;
+				// そこで順位が確定するのでそれを勝率とする
+				allAmount -= c;
+			}
+			return ret;
+		};
+		
+		var getTotalProbability = function(player, rank) {
+			var ranking = [];
+			var ret = 0;
+			// 内部関数で再帰
+			var makeRanking = function() {
+				// 自分の順位なら、最後の順位に自分を入れて確率を計算
+				if(rank == ranking.length) {
+					ranking.push(player);
+					ret += getProbability(ranking);
+					ranking.pop(player);
+					return;
+				}
+				for(var i = 0; i < 10; i++) {
+					if(i == player) {
+						continue;
+					}
+					for(var j = 0; j < ranking.length; j++) {
+						if(ranking[j] == i) {
+							break;
+						}
+					}
+					if(j != ranking.length) {
+						continue;
+					}
+					// 他人を次の順位に入れて再帰する
+					ranking.push(i);
+					makeRanking();
+					ranking.pop(i);
+				}
+			};
+			makeRanking();
+			return ret;
+		};
+		
+		var getICM = function(player) {
+			var ret = 0;
+			for(var i = 0; i < prizePool.length; i++) {
+				// 1位～賞金の下限まで計算する
+				ret += prizePool[i] * getTotalProbability(player, i);
+			}
+			return ret;
+		};
+		
+		calculateICM = function(prizePool_, stacks_) {
+			prizePool = prizePool_;
+			stacks = stacks_;
+			var icm = [];
+			for(var i = 0; i < 10; i++) {
+				if(stacks[i]) {
+					icm[i] = getICM(i);
+				} else {
+					icm[i] = 0;
+				}
+			}
+			return icm;
+		};
+	})();
+	
+	onload = function() {
+		createView();
+	};
+	
+	// 計算ボタンを押されたときに、ICM計算前にそれぞれのスタックを作成する
+	var makeSituations = function(isShow) {
+		var foldCallList = [];
+		// fold-callのペアからシチュエーションを作り出す
+		var makeStacks = function() {
+			// この時点で新しいシチュエーションは完成している
+			var p = showSituation(foldCallList, isShow);
+			
+			// 勝率計算をするプレイヤーを確定させる（該当なしはnull）
+			model.criticalPlayer = p;
+			var isCritical = (p != null);
+			model.isCritical = isCritical;
+			var command;
+			
+			// ポットにベットを入れる関数
+			var createPot;
+			var winPot;
+			(function() {
+				var betAmount = [];
+				for(var i = 0; i < 10; i++) {
+					betAmount[i] = 0;
+				}
+				
+				createPot = function(player, bet) {
+					betAmount[player] = bet;
+				};
+				winPot = function(player, players, betStack) {
+					var betArray = [];
+					var pot;
+					var remainPlayers = [];
+					if(betStack == null) {
+						// betAmountを複製する
+						for(var i in betAmount) {
+							betArray[i] = betAmount[i];
+						}
+						pot = model.pot - 0;
+					} else {
+						// betStackを複製する
+						for(var i in betStack) {
+							betArray[i] = betStack[i];
+						}
+						pot = 0;
+					}
+					
+					var playerBet = betArray[player];
+					for(var i = 0; i < 10; i++) {
+						if(betArray[i] > playerBet && playerBet > 0) {
+							// まだ勝てる可能性のあるプレイヤーがいるということ
+							// そのプレイヤーがプレイ中であることを確認する
+							var addFlag = false;
+							for(var j in players) {
+								if(players[j] == i) {
+									addFlag = true;
+								}
+							}
+							if(addFlag){
+								remainPlayers.push(i);
+							}
+							betArray[i] -= playerBet;
+							pot += playerBet - 0;
+						} else {
+							pot += betArray[i] - 0;
+							betArray[i] = 0;
+						}
+					}
+					return {
+						potStack: pot,
+						betStack: betArray,
+						remainPlayers: remainPlayers
+					};
+				};
+			})();
+			
+			var stackList = [];
+			// ポットの大きさを計算する
+			var maxBet = 0;
+			for(var i = 0; i < 10; i++) {
+				if(model.maxBetPlayer == i) {
+					continue;
+				}
+				if(foldCallList[i]) {
+					// callの場合
+					if(model.maxBet >= model.stacks[i]) {
+						// スタックより大きいのでコール＝オールイン
+						stackList[i] = 0.00001; // ICMの計算のために、わざと0ではなくて少し余裕を持たせている
+						maxBet = Math.max(maxBet, model.stacks[i]);
+						createPot(i, model.stacks[i]);
+					} else {
+						// スタックからベット分を引く
+						stackList[i] = model.stacks[i] - model.maxBet;
+						maxBet = Math.max(maxBet, model.maxBet);
+						createPot(i, model.maxBet);
+					}
+				} else {
+					// foldの場合
+					stackList[i] = model.stacks[i] - model.bets[i];
+					createPot(i, model.bets[i]);
+					maxBet = Math.max(maxBet, model.bets[i]);
+					if(isCritical && p == i) {
+						command = "fold";
+					}
+				}
+			}
+			stackList[model.maxBetPlayer] = model.stacks[model.maxBetPlayer] - maxBet;
+			if(stackList[model.maxBetPlayer] == 0) {
+				stackList[model.maxBetPlayer] = 0.00001; // 上記同様ICM計算のため
+			}
+			createPot(model.maxBetPlayer, maxBet)
+			
+			if(model.maxBet == 0) {
+				// ベットなし。現状のICMを表示して終了（ポットは無視）
+				var icm = calculateICM(model.prizes, stackList);
+				if(isShow) {
+					showResult(stackList, icm);
+				}
+				return;
+			} else {
+				// 誰が勝つかを決める
+				// 誰かが勝った場合、サイドポット争いがある場合はその可能性も表示する
+				
+				var competitor = [];
+				for(var i = 0; i < 10; i++) {
+					if(model.isActive[i] && (stackList[i] == 0 || foldCallList[i])) {
+						competitor.push(i);
+					}
+				}
+				var setWinner = function(winnerList, remainPlayers, betStack) {
+					for(var i = 0; i < remainPlayers.length; i++) {
+						// 注意: ここではiはプレイヤーではなくただの添え字。プレイヤーはremainPlayers[i]
+						winnerList.push(remainPlayers[i]);
+						var potInfo = winPot(remainPlayers[i], remainPlayers, betStack);
+						if(isCritical && !command) {
+							command = ((remainPlayers[i] == p)?"win": "lose");
+						}
+						stackList[remainPlayers[i]] += potInfo.potStack;
+						if(potInfo.remainPlayers.length > 0) {
+							setWinner(winnerList, potInfo.remainPlayers, potInfo.betStack);
+						} else {
+							// 全てのポットの勝者が決定した
+							var icm = calculateICM(model.prizes, stackList);
+							if(isShow) {
+								showResult(stackList, icm, winnerList);
+							}
+							
+							switch(command) {
+								case "fold":
+									model.criticalFoldICMValue = icm[p];
+									model.criticalFoldChipValue = stackList[p];
+									break;
+								case "win":
+									model.criticalWinICMValue = icm[p];
+									model.criticalWinChipValue = stackList[p];
+									break;
+								case "lose":
+									model.criticalLoseICMValue = icm[p];
+									model.criticalLoseChipValue = stackList[p];
+									break;
+							}
+							command = null;
+						}
+						stackList[remainPlayers[i]] -= potInfo.potStack;
+						winnerList.pop();
+					}
+				};
+				setWinner([], competitor);
+				
+				/*
+				// 誰が勝つかを決める
+				for(var i = 0; i < 10; i++) {
+					if(model.isActive[i] && (stackList[i] == 0 || foldCallList[i])) {
+						stackList[i] += pot;
+						if(isCritical && !command) {
+							command = ((i == p)?"win": "lose");
+						}
+						var icm = calculateICM(model.prizes, stackList);
+						showResult(stackList, icm, i);
+						stackList[i] -= pot;
+						
+						switch(command) {
+							case "fold": model.criticalFoldValue = icm[p]; break;
+							case "win": model.criticalWinValue = icm[p]; break;
+							case "lose": model.criticalLoseValue = icm[p]; break;
+						}
+						command = null;
+					}
+				}*/
+			}
+		};
+		
+		var makeFoldCallList = function(player) {
+			if(player >= 10 || model.maxBet == 0) {
+				makeStacks(foldCallList);
+				return;
+			}
+			if(model.maxBetPlayer == player || model.bets[player] == model.stacks[player]) {
+				if(model.isActive[player]) {
+					foldCallList.push(true);
+					makeFoldCallList(player + 1);
+					foldCallList.pop();
+					return;
+				}
+			}
+			foldCallList.push(false);
+			makeFoldCallList(player + 1);
+			foldCallList.pop();
+			
+			if(!model.folds[player] && model.isActive[player] && model.stacks[player] > 0) {
+				foldCallList.push(true);
+				makeFoldCallList(player + 1);
+				foldCallList.pop();
+			}
+			return;
+		};
+		makeFoldCallList(0);
+	};
+	
+	var makeText = function(str) {
+		return document.createTextNode(str);
+	};
+	var makeSpan = function(str, color) {
+		var ret = document.createElement("span");
+		ret.innerHTML = str;
+		ret.style.color = color;
+		return ret;
+	};
+	var format = function(num) {
+		var n = Math.round(num * 1000);
+		var cap = Math.floor(n / 1000);
+		n -= cap * 1000;
+		var ret = "";
+		for(var i = 0; i < 3; i++) {
+			ret = (n % 10) + ret;
+			n = Math.floor(n / 10);
+		}
+		ret = cap + "." + ret;
+		return ret;
+	};
+	var letter = function(n) {
+		var ret;
+		ret = 'unknown';
+		if(n == 0) { ret = 'A'; }
+		if(n == 1) { ret = 'B'; }
+		if(n == 2) { ret = 'C'; }
+		if(n == 3) { ret = 'D'; }
+		if(n == 4) { ret = 'E'; }
+		if(n == 5) { ret = 'F'; }
+		if(n == 6) { ret = 'G'; }
+		if(n == 7) { ret = 'H'; }
+		if(n == 8) { ret = 'I'; }
+		if(n == 9) { ret = 'J'; }
+		return ret;
+	};
+	// ロード時に画面を作り、ハンドラを設定していく
+	var createView = function() {
+		var view = {
+			prizeElements: [],
+			potElement: null,
+			stackElements: [],
+			betElements: [],
+			foldElements: []
+		};
+		
+		var makeInput = function(size) {
+			var element = document.createElement("input");
+			element.type = "text";
+			element.size = "" + size;
+			return element;
+		};
+		var prize = document.getElementById("prize");
+		for(var i = 0; i < 10; i++) {
+			var text = makeText(" " + (i + 1) + "位:");
+			prize.appendChild(text);
+			var input = makeInput(8);
+			prize.appendChild(input);
+			if(i == 4) {
+				prize.appendChild(document.createElement("br"));
+			}
+			view.prizeElements[i] = input;
+		}
+		var clearPrize = function() {
+			for(var i = 0; i < 10; i++) {
+				view.prizeElements[i].value = "";
+			}
+		};
+		document.getElementById("auto3").onclick = function() {
+			clearPrize();
+			view.prizeElements[0].value = "50";
+			view.prizeElements[1].value = "30";
+			view.prizeElements[2].value = "20";
+		};
+		document.getElementById("auto2").onclick = function() {
+			clearPrize();
+			view.prizeElements[0].value = "65";
+			view.prizeElements[1].value = "35";
+		};
+		document.getElementById("autoD").onclick = function() {
+			clearPrize();
+			view.prizeElements[0].value = "100";
+			view.prizeElements[1].value = "100";
+			view.prizeElements[2].value = "100";
+			view.prizeElements[3].value = "100";
+			view.prizeElements[4].value = "100";
+		};
+		document.getElementById("autoD3").onclick = function() {
+			clearPrize();
+			view.prizeElements[0].value = "100";
+			view.prizeElements[1].value = "100";
+			view.prizeElements[2].value = "100";
+		};
+		document.getElementById("autoF").onclick = function() {
+			clearPrize();
+			view.prizeElements[0].value = "500";
+			view.prizeElements[1].value = "100";
+			view.prizeElements[2].value = "100";
+			view.prizeElements[3].value = "100";
+		};
+		document.getElementById("autoF3").onclick = function() {
+			clearPrize();
+			view.prizeElements[0].value = "400";
+			view.prizeElements[1].value = "100";
+			view.prizeElements[2].value = "100";
+		};
+		document.getElementById("auto0").onclick = function() {
+			clearPrize();
+		};
+		
+		var recalc = function() {
+			var ret = view.potElement.value - 0;
+			for(var i = 0; i < 10; i++) {
+				ret += view.stackElements[i].value - 0;
+			}
+			document.getElementById("amount").innerHTML = ret;
+		};
+		
+		view.potElement = document.getElementById("pot");
+		view.potElement.onchange = recalc;
+		
+		var stack = document.getElementById("stack");
+		for(var i = 0; i < 10; i++) {
+			stack.appendChild(makeText("player " + letter(i) + " / 最初のスタック:"));
+			var input = makeInput(8);
+			input.tabIndex = i + 1;
+			stack.appendChild(input);
+			input.onchange = recalc;
+			view.stackElements[i] = input;
+			stack.appendChild(makeText(" / ベット:"));
+			stack.appendChild(input = makeInput(8));
+			input.tabIndex = 11 + i;
+			input.onchange = recalc;
+			view.betElements[i] = input;
+			stack.appendChild(makeText(" / フォールド:"));
+			var checkbox = document.createElement("input");
+			checkbox.type = "checkbox";
+			stack.appendChild(checkbox);
+			checkbox.tabIndex = 21 + i;
+			checkbox.checked = true;
+			view.foldElements[i] = checkbox;
+			stack.appendChild(document.createElement("br"));
+		}
+		document.getElementById("clear").onclick = function() {
+			for(var i = 0; i < 10; i++) {
+				view.prizeElements[i].value = "";
+				view.stackElements[i].value = "";
+				view.betElements[i].value = "";
+				view.foldElements[i].checked = true;
+			}
+			view.potElement.value = "";
+			recalc();
+		};
+		
+		var initialize = function() {
+			model = {};
+			model.prizes = [];
+			for(var i = 0; i < 10; i++) {
+				if(view.prizeElements[i].value - 0 == 0) {
+					break;
+				}
+				model.prizes[i] = view.prizeElements[i].value - 0;
+			}
+			if(i == 0) {
+				alert("1位の賞金を入力してください");
+				return false;
+			}
+			model.pot = view.potElement.value - 0;
+			model.stacks = [];
+			model.bets = [];
+			model.folds = [];
+			model.isActive = [];
+			var players = 0;
+			var maxBet = 0;
+			var maxBetPlayer = 0;
+			for(var i = 0; i < 10; i++) {
+				var stack = view.stackElements[i].value - 0;
+				model.stacks[i] = stack;
+				model.isActive[i] = (stack > 0);
+				if(stack > 0) {
+					players++;
+				}
+				var bet = view.betElements[i].value - 0;
+				if(bet > stack) {
+					// オールインでござる
+					bet = stack;
+					view.betElements[i].value = bet;
+				}
+				if(bet > 0 && bet == stack) {
+					view.foldElements[i].checked = false;
+				}
+				if(bet == 0 && stack == 0) {
+					view.foldElements[i].checked = true;
+				}
+				
+				model.bets[i] = bet;
+				if(bet > maxBet) {
+					maxBet = bet;
+					maxBetPlayer = i;
+				}
+				
+				model.folds[i] = view.foldElements[i].checked;
+			}
+			if(players < 2) {
+				alert("最低二人のスタックを入力してください");
+				return false;
+			}
+			model.maxBet = maxBet;
+			if(maxBet > 0) {
+				model.maxBetPlayer = maxBetPlayer;
+				model.folds[maxBetPlayer] = false;
+				view.foldElements[maxBetPlayer].checked = false;
+			}
+			
+			document.getElementById("result").innerHTML = "";
+			return true;
+		};
+		
+		document.getElementById("calc").onclick = function() {
+			if(!initialize()) {
+				return;
+			}
+			
+			showSituation.index = 1;
+			showStatus();
+			makeSituations(true);
+			showCritical();
+		};
+		
+		document.getElementById("bf").onclick = function() {
+			if(!initialize()) {
+				return;
+			}
+			
+			var players = [];
+			for(var i = 0; i < 10; i++) {
+				if(model.isActive[i]) {
+					players[players.length] = i;
+				}
+			}
+			
+			var table = document.createElement("table");
+			table.border = 1;
+			
+			var tbody = document.createElement("tbody");
+			table.appendChild(tbody);
+			
+			// create left-top
+			var leftTop = document.createElement("tr");
+			tbody.appendChild(leftTop);
+			var spaceCell = document.createElement("td");
+			spaceCell.rowSpan = 3;
+			spaceCell.colSpan = 3;
+			leftTop.appendChild(spaceCell);
+			var td = document.createElement("td");
+			td.colSpan = players.length;
+			td.innerHTML = "Opponent";
+			leftTop.appendChild(td);
+			
+			// create header
+			var head = document.createElement("tr");
+			var headStack = document.createElement("tr");
+			tbody.appendChild(head);
+			tbody.appendChild(headStack);
+			for(var i = 0; i < players.length; i++) {
+				var td = document.createElement("td");
+				td.innerHTML = letter(players[i]);
+				head.appendChild(td);
+				td = document.createElement("td");
+				td.innerHTML = model.stacks[players[i]];
+				headStack.appendChild(td);
+			}
+			var icm = calculateICM(model.prizes, [].concat(model.stacks));
+			// create cells
+			for(var i = 0; i < players.length; i++) {
+				var tr = document.createElement("tr");
+				tbody.appendChild(tr);
+				if(i == 0) {
+					var td = document.createElement("td");
+					td.rowSpan = players.length;
+					td.innerHTML = "Hero";
+					tr.appendChild(td);
+				}
+				var td = document.createElement("td");
+				td.innerHTML = letter(players[i]);
+				tr.appendChild(td);
+				var td = document.createElement("td");
+				td.innerHTML = model.stacks[players[i]] + "<br><span style='font-size:small;color:#888'>(" + format(icm[i]) + ")</span>";
+//////////////////////////////////////////////////////////////////////////////////// 
+				tr.appendChild(td);
+				for(var j = 0; j < players.length; j++) {
+					var bf;
+					if(i == j) {
+						bf = "----";
+					} else {
+						// calucurate bubble factor
+						for(k = 0; k < players.length; k++) {
+							// clear bettings
+							model.bets[players[k]] = 0;
+							model.maxBet = 0;
+							model.maxBetPlayer = 0;
+							model.folds[players[k]] = true;
+						}
+						
+						// All-in:j call:i
+						model.maxBetPlayer = players[j];
+						model.maxBet = model.stacks[players[j]];
+						model.bets[players[j]] = model.stacks[players[j]];
+						model.folds[players[j]] = false;
+						
+						model.folds[players[i]] = false;
+						
+						// calcurate
+						makeSituations(false);
+						
+						// get BF
+						bf = getBubbleFactor();
+						bf = bf.bf + "<br><span style='font-size:small;color:#888'>" + bf.p + "%</span>";
+					}
+					
+					var cell = document.createElement("td");
+					cell.innerHTML = bf;
+					tr.appendChild(cell);
+				}
+			}
+			document.getElementById("result").appendChild(table);
+			
+			// get average bubble factor
+			for(k = 0; k < players.length; k++) {
+				// clear bettings
+				model.stacks[players[k]] = 1500;
+				model.bets[players[k]] = 0;
+				model.maxBet = 0;
+				model.maxBetPlayer = 0;
+				model.folds[players[k]] = true;
+			}
+			
+			// All-in:j call:i
+			model.maxBetPlayer = players[0];
+			model.maxBet = model.stacks[players[0]];
+			model.bets[players[0]] = model.stacks[players[0]];
+			model.folds[players[0]] = false;
+			
+			model.folds[players[1]] = false;
+			
+			// calcurate
+			makeSituations(false);
+			
+			// get BF
+			bf = getBubbleFactor();
+			result.appendChild(makeText("Average Bubble Factor:"));
+			result.appendChild(makeSpan(bf.bf, "red"));
+		};
+	};
+	
+	var showSituation = function(foldCallList, isShow) {
+		var result;
+		if(isShow) {
+			result = document.getElementById("result");
+		} else {
+			// set dummy
+			result = document.createElement("div");
+		}
+		
+		if(model.maxBet == 0) {
+			result.appendChild(document.createElement("hr"));
+			result.appendChild(makeText("current ICM:"));
+			result.appendChild(document.createElement("br"));
+			return;
+		}
+		
+		result.appendChild(document.createElement("hr"));
+		result.appendChild(makeText("situation " + showSituation.index));
+		showSituation.index++;
+		var first = true;
+		
+		var activePlayer = 0;
+		var player;
+		for(var i = 0; i < 10; i++) {
+			if(model.isActive[i] && model.maxBetPlayer != i && model.bets[i] == model.stacks[i]) {
+				activePlayer++;
+			}
+			if(!model.isActive[i] || model.maxBetPlayer == i || model.folds[i] || model.bets[i] == model.stacks[i]) {
+				continue;
+			}
+			if(first) {
+				first = false;
+				result.appendChild(makeText(" /"));
+			}
+			result.appendChild(makeText(" " + letter(i) +":"));
+			if(model.bets[i] == model.stacks[i]) {
+				// ここ絶対来ない
+				result.appendChild(makeSpan("all-in", "red"));
+			} else if(foldCallList[i]) {
+				result.appendChild(makeSpan("call", "blue"));
+			} else {
+				result.appendChild(makeSpan("fold", "black"));
+			}
+			activePlayer++;
+			player = i;
+		}
+		result.appendChild(document.createElement("br"));
+		
+		// プレイヤーが一人しかいなければ、必要勝率を計算する準備をする
+		if(activePlayer == 1) {
+			return player;
+		}
+		return null;
+	};
+	
+	var showStatus = function() {
+		var result = document.getElementById("result");
+		result.appendChild(document.createElement("hr"));
+		
+		var firstFlag = true;
+		result.appendChild(makeText("Prize "));
+		for(var i = 0; i < model.prizes.length; i++) {
+			if(!firstFlag) {
+				result.appendChild(makeText("/"));
+			}
+			firstFlag = false;
+			result.appendChild(makeText(model.prizes[i]));
+		}
+		result.appendChild(document.createElement("br"));
+		
+		result.appendChild(makeText("Pot " + model.pot));
+		result.appendChild(document.createElement("br"));
+		
+		firstFlag = true;
+		result.appendChild(makeText("Stack "));
+		for(var i = 0; i < 10; i++) {
+			if(model.isActive[i]) {
+				if(!firstFlag) {
+					result.appendChild(makeText("/"));
+				}
+				firstFlag = false;
+				result.appendChild(makeText(letter(i) + model.stacks[i]));
+			}
+		}
+		result.appendChild(document.createElement("br"));
+		
+		result.appendChild(makeText("Bet "));
+		firstFlag = true;
+		for(var i = 0; i < 10; i++) {
+			if(model.bets[i]) {
+				if(!firstFlag) {
+					result.appendChild(makeText("/"));
+				}
+				firstFlag = false;
+				result.appendChild(makeText(letter(i) + model.bets[i]));
+			}
+		}
+		result.appendChild(document.createElement("br"));
+		
+		result.appendChild(makeText("Active "));
+		firstFlag = true;
+		for(var i = 0; i < 10; i++) {
+			if(!model.folds[i]) {
+				if(!firstFlag) {
+					result.appendChild(makeText("/"));
+				}
+				firstFlag = false;
+				result.appendChild(makeText(letter(i)));
+			}
+		}
+		result.appendChild(document.createElement("br"));
+	};
+	
+	var showResult = function(stackList, icm, winnerList) {
+		var result = document.getElementById("result");
+		if(winnerList != null) {
+			for(var i = 0; i < winnerList.length; i++) {
+				result.appendChild(makeSpan("Player " + letter(winnerList[i]) +" win", "red"));
+				result.appendChild(makeSpan(((i == winnerList.length - 1)?":":" / "), "red"));
+			}
+			result.appendChild(document.createElement("br"));
+		}
+		
+		for(var i = 0; i < 10; i++) {
+			if(model.isActive[i]) {
+				result.appendChild(makeText("Player" + letter(i) + ": stack(" + Math.floor(stackList[i]) + ")  ICM:" + format(icm[i])));
+				result.appendChild(document.createElement("br"));
+			}
+		}
+	};
+	
+	var showCritical = function() {
+		var result = document.getElementById("result");
+		if(!model.isCritical) {
+			return;
+		}
+		result.appendChild(document.createElement("hr"));
+		result.appendChild(makeText("Player" + letter(model.criticalPlayer) + "について:"));
+		result.appendChild(document.createElement("br"));
+		result.appendChild(makeText("Fold: ICM(" + format(model.criticalFoldICMValue)));
+		result.appendChild(makeText(") chip(" + format(model.criticalFoldChipValue) + ")"));
+		result.appendChild(document.createElement("br"));
+		result.appendChild(makeText("Win: ICM(" + format(model.criticalWinICMValue)));
+		result.appendChild(makeText(") chip(" + format(model.criticalWinChipValue) + ")"));
+		result.appendChild(document.createElement("br"));
+		result.appendChild(makeText("Lose: ICM(" + format(model.criticalLoseICMValue)));
+		result.appendChild(makeText(") chip(" + format(model.criticalLoseChipValue) + ")"));
+		result.appendChild(document.createElement("br"));
+		var p = 100 * (model.criticalFoldICMValue - model.criticalLoseICMValue) / (model.criticalWinICMValue - model.criticalLoseICMValue);
+		result.appendChild(makeText("ICM的必要勝率："));
+		result.appendChild(makeSpan(format(p) + "%", "red"));
+		p = 100 * (model.criticalFoldChipValue - model.criticalLoseChipValue) / (model.criticalWinChipValue - model.criticalLoseChipValue);
+		result.appendChild(makeText(" / チップ必要勝率(オッズ)："));
+		result.appendChild(makeSpan(format(p) + "%", "red"));
+	};
+	
+	var getBubbleFactor = function() {
+		var bf = (model.criticalFoldICMValue - model.criticalLoseICMValue) / (model.criticalWinICMValue - model.criticalFoldICMValue);
+		var p = 100 * (model.criticalFoldICMValue - model.criticalLoseICMValue) / (model.criticalWinICMValue - model.criticalLoseICMValue);
+		return {bf: format(bf), p: format(p)};
+	};
+})();
+</script>
+</head>
+<body>
+
+賞金:<br>
+(自動入力)<br><input type="button" value="50-30-20" id="auto3"> <input type="button" value="65-35" id="auto2"> <input type="button" value="100-100-100-100-100" id="autoD"> <input type="button" value="100-100-100" id="autoD3"><br>
+<input type="button" value="400-100-100" id="autoF3"> <input type="button" value="500-100-100-100" id="autoF"> <input type="button" value="クリア" id="auto0"><br>
+<div id="prize">
+<!--1位:<input type="text" size="5"> -->
+</div>
+<hr>
+
+ポット:<input type="text" size="8" id="pot"><br><br>
+スタックサイズ:<br>
+<div id="stack">
+<!--player 1:<input type="text" size="8"> / ベット:<input type="text" size="8"> <input type="text" size="8"> <input type="text" size="8"> <input type="text" size="8"> / フォールド:<input type="checkbox"><br>-->
+</div>
+全チップ合計: <span id="amount">0</span>
+<br><br>
+
+<!--ラストベット:<br>
+player <input type="text" size="2"> / ベット: <input type="text" size="8">
+-->
+<input type="button" value="計算" id="calc"> <input type="button" value="クリア" id="clear"> <input type="button" value="Bubble Factor" id="bf"><br>
+※Bubble Factorの計算は、賞金ストラクチャが広くプレイヤーが多い場合（例えばDoNなど）にはかなり時間がかかります
+<div id="result">
+</div>
+
+</body></html>
